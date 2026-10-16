@@ -5,7 +5,6 @@ import android.graphics.Typeface
 import android.media.audiofx.AudioEffect
 import android.os.Bundle
 import android.provider.Settings
-import android.view.Gravity
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -29,10 +28,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playersText: TextView
     private lateinit var sessionsText: TextView
     private lateinit var backendText: TextView
+    private lateinit var pipelineText: TextView
     private lateinit var testText: TextView
     private var selectedEngine = EpicenterEngine.HYBRID
     private var params = EpicenterParams()
     private var enabled = false
+    private var backendProbe = EffectProbeResult(found = false, insertFound = false, descriptions = emptyList())
+    private var companionEqStatus = CompanionEqStatus(powerampEqInstalled = false)
 
     private val sessionListener: () -> Unit = { runOnUiThread { renderTracking() } }
 
@@ -41,8 +43,8 @@ class MainActivity : AppCompatActivity() {
         consumeEffectPanelIntent(intent)
         setContentView(buildUi())
         SessionStore.addListener(sessionListener)
-        renderTracking()
         renderBackend()
+        renderTracking()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -69,15 +71,19 @@ class MainActivity : AppCompatActivity() {
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "Motor DSP copiado 1:1 de jgl-homer/player. Tracking de reproductores y sesiones estilo AudioEffect."
+            text = "Motor DSP integrado + tracking de reproductores y sesiones. El estado distingue detección de procesamiento real."
             textSize = 14f
             setPadding(0, dp(6), 0, dp(18))
         })
 
+        pipelineText = sectionText(root, "Estado real")
         backendText = sectionText(root, "Backend")
         val probeButton = Button(this).apply {
-            text = "Volver a detectar backend de sistema"
-            setOnClickListener { renderBackend() }
+            text = "Volver a detectar backend y efectos"
+            setOnClickListener {
+                renderBackend()
+                renderTracking()
+            }
         }
         root.addView(probeButton)
 
@@ -102,6 +108,7 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, checked ->
                 enabled = checked
                 EpicenterProcessorController.setEpicenterEnabled(checked)
+                renderPipelineStatus()
             }
         }
         root.addView(enabledSwitch)
@@ -168,20 +175,63 @@ class MainActivity : AppCompatActivity() {
         val sessions = SessionStore.sessions()
         sessionsText.text = buildString {
             append("Sesiones AudioEffect\n")
-            if (sessions.isEmpty()) append("• Ningún reproductor anunció OPEN_AUDIO_EFFECT_CONTROL_SESSION")
-            else sessions.forEach { s ->
-                val pkg = s.packageName.ifBlank { "paquete desconocido" }
-                append("• ${appLabel(pkg)} · session ${s.sessionId} · content ${s.contentType}\n")
+            if (sessions.isEmpty()) {
+                append("• Ningún reproductor anunció OPEN_AUDIO_EFFECT_CONTROL_SESSION")
+            } else {
+                sessions.forEach { s ->
+                    val pkg = s.packageName.ifBlank { "paquete desconocido" }
+                    append("• ${appLabel(pkg)} · session ${s.sessionId} · content ${s.contentType}\n")
+                }
             }
         }.trimEnd()
+
+        renderPipelineStatus()
     }
 
     private fun renderBackend() {
-        val result = EffectProbe.scan()
-        backendText.text = if (result.found) {
-            "Backend\n• Se detectó un efecto de sistema JGL/Epicenter:\n${result.descriptions.joinToString("\n") { "  $it" }}"
-        } else {
-            "Backend\n• Core DSP: cargado en la APK.\n• Efecto insertable de sistema JGL: NO detectado.\n• En este estado la app reconoce sesiones, pero Android no entrega el PCM externo al Kotlin DSP."
+        backendProbe = EffectProbe.scan()
+        companionEqStatus = CompanionEqProbe.scan(this)
+
+        backendText.text = buildString {
+            append("Backend\n")
+            append("• Core DSP local: disponible\n")
+            if (backendProbe.found) {
+                append("• Efecto JGL/Epicenter visible en AudioEffect: SÍ\n")
+                append("• Insert compatible: ${if (backendProbe.insertFound) "SÍ" else "NO"}\n")
+                backendProbe.descriptions.forEach { append("  $it\n") }
+            } else {
+                append("• Efecto JGL/Epicenter de sistema: NO detectado\n")
+                append("• PCM externo: no disponible para el DSP Kotlin actual\n")
+            }
+            append("• Poweramp Equalizer instalado: ${if (companionEqStatus.powerampEqInstalled) "SÍ" else "NO"}\n")
+            if (companionEqStatus.powerampEqInstalled) {
+                append("• Poweramp EQ unido a esta sesión: DESCONOCIDO con la API pública")
+            }
+        }.trimEnd()
+
+        renderPipelineStatus()
+    }
+
+    private fun renderPipelineStatus() {
+        if (!::pipelineText.isInitialized) return
+        val status = PipelineStatusResolver.resolve(
+            activePackages = SessionStore.activePackages(),
+            sessions = SessionStore.sessions(),
+            backendProbe = backendProbe,
+            powerampEqInstalled = companionEqStatus.powerampEqInstalled,
+        )
+        fun mark(value: Boolean) = if (value) "✓" else "✗"
+
+        pipelineText.text = buildString {
+            append("Estado real\n")
+            append("• Player detected: ${mark(status.playerDetected)}\n")
+            append("• Session detected: ${mark(status.sessionDetected)}\n")
+            append("• System backend discovered: ${mark(status.systemBackendDiscovered)}\n")
+            append("• Effect attached: ${mark(status.effectAttached)}\n")
+            append("• DSP processing external audio: ${mark(status.dspProcessing)}\n")
+            append("• Epicenter UI enabled: ${mark(enabled)}\n")
+            append("• Poweramp EQ installed: ${mark(status.powerampEqInstalled)}\n")
+            append("• Poweramp EQ attached: ? (no afirmarlo sin backend que lo verifique)")
         }
     }
 
@@ -272,7 +322,8 @@ class MainActivity : AppCompatActivity() {
     private fun addDivider(parent: LinearLayout) {
         parent.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(18); bottomMargin = dp(18)
+                topMargin = dp(18)
+                bottomMargin = dp(18)
             }
             setBackgroundColor(0x44FFFFFF)
         })
