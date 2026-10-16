@@ -2,7 +2,11 @@ package com.jglhomer.epicentereq
 
 import android.media.audiofx.AudioEffect
 
-data class EffectProbeResult(val found: Boolean, val descriptions: List<String>)
+data class EffectProbeResult(
+    val found: Boolean,
+    val insertFound: Boolean,
+    val descriptions: List<String>,
+)
 
 object EffectProbe {
     fun scan(): EffectProbeResult {
@@ -14,7 +18,10 @@ object EffectProbe {
         }
         return EffectProbeResult(
             found = hits.isNotEmpty(),
-            descriptions = hits.map { "${it.name} · ${it.implementor} · ${it.uuid}" },
+            insertFound = hits.any { it.connectMode == AudioEffect.EFFECT_INSERT },
+            descriptions = hits.map {
+                "${it.name} · ${it.implementor} · ${it.connectMode} · ${it.uuid}"
+            },
         )
     }
 }
